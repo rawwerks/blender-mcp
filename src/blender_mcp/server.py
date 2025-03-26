@@ -169,8 +169,10 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
         # Just log that we're starting up
         logger.info("BlenderMCP server starting up")
 
-        #test uv dev
-        logger.info("this proves that we're running the local dev version")
+        # VERY VISIBLE DEBUG MESSAGE FOR LOCAL DEV
+        logger.info("****************************************************************************")
+        logger.info("******* THIS IS 100% DEFINITELY THE LOCAL DEV VERSION FROM RAYMOND *********")
+        logger.info("****************************************************************************")
         
         # Try to connect to Blender on startup to verify it's available
         try:
@@ -873,7 +875,7 @@ def import_generated_asset(
         logger.error(f"Error importing generated asset: {str(e)}")
         raise ValueError(f"Failed to import generated asset: {str(e)}")
 
-@mcp.tool(name="mcp_blender_get_viewport_capture")
+@mcp.tool()
 def get_viewport_capture(
     ctx: Context,
     width: int = 800,
@@ -970,6 +972,9 @@ def asset_creation_strategy() -> str:
 
 def main():
     """Run the Blender MCP server"""
+    print("\n\n-----------------------------------------")
+    print("RAYMOND'S LOCAL DEV VERSION IS RUNNING!!!")
+    print("-----------------------------------------\n\n")
     logger.info("===> DEBUG: Main function in the local dev version!")
     mcp.run()
 
