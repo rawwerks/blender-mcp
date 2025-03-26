@@ -122,8 +122,12 @@ class BlenderConnection:
             self.sock.sendall(json.dumps(command).encode('utf-8'))
             logger.info(f"Command sent, waiting for response...")
             
-            # Set a timeout for receiving - use the same timeout as in receive_full_response
-            self.sock.settimeout(15.0)  # Match the addon's timeout
+            # Set a timeout for receiving - use a longer timeout for render operations
+            if command_type == "render_scene":
+                self.sock.settimeout(60.0)  # Use a full minute for rendering
+                logger.info("Using extended timeout (60s) for render operation")
+            else:
+                self.sock.settimeout(15.0)  # Match the addon's timeout
             
             # Receive the response using the improved receive_full_response method
             response_data = self.receive_full_response(self.sock)
@@ -600,6 +604,39 @@ def download_polyhaven_asset(
         return f"Error downloading Polyhaven asset: {str(e)}"
 
 @mcp.tool()
+def render_scene(ctx: Context, width: int = 960, height: int = 540, format: str = 'PNG', quality: int = 85) -> str:
+    """
+    Render the current scene in Blender and return as base64 encoded image.
+    
+    Parameters:
+    - width: Render width in pixels (default: 960)
+    - height: Render height in pixels (default: 540)
+    - format: Image format (PNG, JPEG, etc.)
+    - quality: Compression quality (0-100) for JPEG/WebP formats
+    
+    Using a lower resolution (like 960x540) will render much faster than full HD (1920x1080).
+    """
+    try:
+        logger.info(f"Starting render with resolution {width}x{height} in {format} format")
+        blender = get_blender_connection()
+        result = blender.send_command("render_scene", {
+            "width": width,
+            "height": height, 
+            "format": format,
+            "quality": quality
+        })
+        
+        if "error" in result:
+            logger.error(f"Blender reported render error: {result['error']}")
+            return f"Error rendering scene: {result['error']}"
+            
+        logger.info(f"Render completed successfully. Image size: {result.get('width')}x{result.get('height')}")
+        return f"Scene rendered successfully. Image size: {result.get('width', '?')}x{result.get('height', '?')}"
+    except Exception as e:
+        logger.error(f"Error rendering scene: {str(e)}")
+        return f"Error rendering scene: {str(e)}"
+
+@mcp.tool()
 def set_texture(
     ctx: Context,
     object_name: str,
@@ -874,58 +911,6 @@ def import_generated_asset(
     except Exception as e:
         logger.error(f"Error importing generated asset: {str(e)}")
         raise ValueError(f"Failed to import generated asset: {str(e)}")
-
-@mcp.tool()
-def render_scene(self, output_format='PNG'):
-    """Render the current scene and return as base64 encoded image"""
-    import bpy
-    import base64
-    from io import BytesIO
-    
-    # Store original render settings
-    original_path = bpy.context.scene.render.filepath
-    original_format = bpy.context.scene.render.image_settings.file_format
-    
-    try:
-        # Set up render to save to memory
-        bpy.context.scene.render.filepath = ""
-        bpy.context.scene.render.image_settings.file_format = output_format
-        
-        # Render the scene
-        bpy.ops.render.render(write_still=True)
-        
-        # Get the rendered image
-        image = bpy.data.images['Render Result']
-        
-        # Convert to bytes
-        width, height = image.size
-        pixels = image.pixels[:]
-        buffer = bytearray([int(p * 255) for p in pixels])
-        
-        # Create image from buffer
-        from PIL import Image
-        img = Image.frombuffer('RGBA', (width, height), buffer, 'raw', 'RGBA', 0, 1)
-        
-        # Encode to base64
-        buffered = BytesIO()
-        img.save(buffered, format=output_format)
-        encoded = base64.b64encode(buffered.getvalue()).decode('utf-8')
-        
-        return {
-            "image": encoded,
-            "format": f"base64/{output_format.lower()}",
-            "width": width,
-            "height": height,
-            "mime_type": f"image/{output_format.lower()}"
-        }
-    
-    except Exception as e:
-        return {"error": f"Error rendering scene: {str(e)}"}
-    
-    finally:
-        # Restore original settings
-        bpy.context.scene.render.filepath = original_path
-        bpy.context.scene.render.image_settings.file_format = original_format
 
 @mcp.prompt()
 def asset_creation_strategy() -> str:

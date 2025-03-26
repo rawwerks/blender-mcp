@@ -211,6 +211,7 @@ class BlenderMCPServer:
             "get_polyhaven_status": self.get_polyhaven_status,
             "get_hyper3d_status": self.get_hyper3d_status,
             "get_viewport_capture": self.get_viewport_capture,
+            "render_scene": self.render_scene,
         }
         
         # Add Polyhaven handlers only if enabled
@@ -571,25 +572,133 @@ class BlenderMCPServer:
                 "material": material_name if 'material_name' in locals() else None
             }
     
-    def render_scene(self, output_path=None, resolution_x=None, resolution_y=None):
-        """Render the current scene"""
-        if resolution_x is not None:
-            bpy.context.scene.render.resolution_x = resolution_x
+    def render_scene(self, width=1920, height=1080, format='PNG', quality=85):
+        """Render the current scene and return as base64 encoded image"""
+        print("===> DEBUG: Scene render function in addon.py activated!")
+        import bpy
+        import base64
+        from io import BytesIO
+        import traceback
+        import time
         
-        if resolution_y is not None:
-            bpy.context.scene.render.resolution_y = resolution_y
+        start_time = time.time()
+        try:
+            # Store original render settings
+            original_path = bpy.context.scene.render.filepath
+            original_format = bpy.context.scene.render.image_settings.file_format
+            original_quality = bpy.context.scene.render.image_settings.quality
+            original_res_x = bpy.context.scene.render.resolution_x
+            original_res_y = bpy.context.scene.render.resolution_y
+            
+            # Set temporary render settings
+            bpy.context.scene.render.filepath = ""  # Render to memory
+            bpy.context.scene.render.image_settings.file_format = format
+            bpy.context.scene.render.image_settings.quality = quality
+            bpy.context.scene.render.resolution_x = width
+            bpy.context.scene.render.resolution_y = height
+            
+            print("===> DEBUG: Starting render with settings:")
+            print(f"===> DEBUG: Resolution: {width}x{height}, Format: {format}, Quality: {quality}")
+            
+            # Render the scene
+            render_start = time.time()
+            bpy.ops.render.render(write_still=True)
+            render_end = time.time()
+            print(f"===> DEBUG: Render completed in {render_end - render_start:.2f} seconds")
+            
+            # Get the rendered image
+            render_result = bpy.data.images['Render Result']
+            print(f"===> DEBUG: Got render result: {render_result.size[0]}x{render_result.size[1]}")
+            
+            # Convert to bytes directly and save to file format
+            # This is more efficient than using numpy array conversion
+            buffered = BytesIO()
+            
+            # Different handling for different formats
+            if format.upper() in ['JPEG', 'JPG']:
+                # For JPEG, we save directly from render_result
+                render_result.save_render(buffered, scene=bpy.context.scene)
+                # Note: Blender's save_render function takes care of the format
+                print(f"===> DEBUG: Saved image as JPEG with quality {quality}")
+            elif format.upper() == 'PNG':
+                # Save via a temporary file for consistent handling
+                temp_path = original_path or "//temp_render.png"
+                bpy.context.scene.render.filepath = temp_path
+                bpy.context.scene.render.image_settings.file_format = 'PNG'
+                bpy.ops.render.render(write_still=True)
+                
+                # Read the file and save to buffer
+                import os
+                real_path = bpy.path.abspath(temp_path)
+                if os.path.exists(real_path):
+                    with open(real_path, 'rb') as f:
+                        buffered.write(f.read())
+                    # Clean up temp file
+                    os.remove(real_path)
+                    print(f"===> DEBUG: Saved image as PNG via temporary file")
+                else:
+                    # Fallback to PIL if file save failed
+                    from PIL import Image
+                    import numpy as np
+                    pixels = list(render_result.pixels)
+                    width, height = render_result.size
+                    
+                    pixels_array = np.array(pixels) * 255
+                    pixels_array = pixels_array.astype(np.uint8).reshape((height, width, 4))
+                    image = Image.fromarray(pixels_array, 'RGBA')
+                    image.save(buffered, format='PNG')
+                    print(f"===> DEBUG: Saved image as PNG via PIL fallback")
+            else:
+                # For other formats, use PIL as fallback
+                from PIL import Image
+                import numpy as np
+                pixels = list(render_result.pixels)
+                width, height = render_result.size
+                
+                pixels_array = np.array(pixels) * 255
+                pixels_array = pixels_array.astype(np.uint8).reshape((height, width, 4))
+                image = Image.fromarray(pixels_array, 'RGBA')
+                image.save(buffered, format=format, quality=quality)
+                print(f"===> DEBUG: Saved image as {format} using PIL")
+            
+            # Encode to base64
+            encode_start = time.time()
+            buffered.seek(0)
+            encoded = base64.b64encode(buffered.getvalue()).decode('utf-8')
+            encode_end = time.time()
+            print(f"===> DEBUG: Encoded image to base64 in {encode_end - encode_start:.2f} seconds")
+            print(f"===> DEBUG: Encoded size: {len(encoded)} bytes")
+            
+            # Calculate total processing time
+            end_time = time.time()
+            print(f"===> DEBUG: Total render+encode time: {end_time - start_time:.2f} seconds")
+            
+            # Return the encoded image
+            return {
+                "image": encoded,
+                "format": f"base64/{format.lower()}",
+                "width": width,
+                "height": height,
+                "mime_type": f"image/{format.lower()}",
+                "render_time": f"{render_end - render_start:.2f} seconds",
+                "total_time": f"{end_time - start_time:.2f} seconds"
+            }
         
-        if output_path:
-            bpy.context.scene.render.filepath = output_path
-        
-        # Render the scene
-        bpy.ops.render.render(write_still=bool(output_path))
-        
-        return {
-            "rendered": True,
-            "output_path": output_path if output_path else "[not saved]",
-            "resolution": [bpy.context.scene.render.resolution_x, bpy.context.scene.render.resolution_y],
-        }
+        except Exception as e:
+            print(f"===> ERROR: Error rendering scene: {str(e)}")
+            traceback.print_exc()
+            return {"error": f"Error rendering scene: {str(e)}"}
+            
+        finally:
+            # Restore original settings
+            print("===> DEBUG: Restoring original render settings")
+            bpy.context.scene.render.filepath = original_path
+            bpy.context.scene.render.image_settings.file_format = original_format
+            if hasattr(bpy.context.scene.render.image_settings, 'quality'):
+                bpy.context.scene.render.image_settings.quality = original_quality
+            bpy.context.scene.render.resolution_x = original_res_x
+            bpy.context.scene.render.resolution_y = original_res_y
+            print("===> DEBUG: Original settings restored")
 
     def get_polyhaven_categories(self, asset_type):
         """Get categories for a specific asset type from Polyhaven"""
