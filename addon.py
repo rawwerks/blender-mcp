@@ -9,6 +9,8 @@ import tempfile
 import traceback
 import os
 import shutil
+import sys
+import site
 from bpy.props import StringProperty, IntProperty, BoolProperty, EnumProperty
 
 bl_info = {
@@ -22,6 +24,143 @@ bl_info = {
 }
 
 RODIN_FREE_TRIAL_KEY = "k9TcfFoEhNd9cCPP2guHAHHHkctZHIRhZDywZ1euGUXwihbYLpOjQhofby80NJez"
+
+def ensure_pil_installed():
+    """
+    Ensure PIL is available by copying it from system Python to Blender's Python
+    Returns True if successful, False otherwise
+    """
+    try:
+        # First try to import PIL to see if it's already available
+        try:
+            from PIL import Image
+            print("PIL is already installed and accessible")
+            return True
+        except ImportError:
+            print("PIL not found, attempting to install...")
+            
+        # Find Blender's Python site-packages directory
+        blender_python_path = None
+        for path in sys.path:
+            if os.path.basename(path) == 'site-packages' and 'blender' in path.lower():
+                blender_python_path = path
+                break
+        
+        if not blender_python_path:
+            # Try alternate detection method
+            blender_python_exec = bpy.app.binary_path_python
+            blender_python_dir = os.path.dirname(blender_python_exec)
+            potential_paths = [
+                os.path.join(blender_python_dir, '..', 'lib', 'site-packages'),
+                os.path.join(blender_python_dir, '..', 'lib', 'python3.10', 'site-packages'),
+                os.path.join(blender_python_dir, '..', 'lib', 'python3.9', 'site-packages')
+            ]
+            
+            for path in potential_paths:
+                resolved_path = os.path.abspath(path)
+                if os.path.exists(resolved_path):
+                    blender_python_path = resolved_path
+                    break
+        
+        if not blender_python_path:
+            print("Could not find Blender's Python site-packages directory")
+            return False
+            
+        print(f"Blender Python site-packages: {blender_python_path}")
+        
+        # Try to find PIL in system Python installations
+        system_pil_path = None
+        
+        # First try the user's site-packages
+        user_site = site.getusersitepackages()
+        potential_pil_path = os.path.join(user_site, 'PIL')
+        if os.path.exists(potential_pil_path):
+            system_pil_path = potential_pil_path
+            print(f"Found PIL in user site-packages: {system_pil_path}")
+        
+        # If not found, try system site-packages
+        if not system_pil_path:
+            for sys_path in site.getsitepackages():
+                potential_pil_path = os.path.join(sys_path, 'PIL')
+                if os.path.exists(potential_pil_path):
+                    system_pil_path = potential_pil_path
+                    print(f"Found PIL in system site-packages: {system_pil_path}")
+                    break
+        
+        # If still not found, check common locations based on OS
+        if not system_pil_path:
+            common_paths = []
+            
+            if sys.platform == 'win32':
+                # Windows
+                python_versions = ['Python37', 'Python38', 'Python39', 'Python310', 'Python311']
+                for pv in python_versions:
+                    common_paths.append(f'C:\\Program Files\\{pv}\\Lib\\site-packages\\PIL')
+                    common_paths.append(f'C:\\Program Files (x86)\\{pv}\\Lib\\site-packages\\PIL')
+            elif sys.platform == 'darwin':
+                # macOS
+                common_paths.extend([
+                    '/Library/Frameworks/Python.framework/Versions/3.9/lib/python3.9/site-packages/PIL',
+                    '/Library/Frameworks/Python.framework/Versions/3.10/lib/python3.10/site-packages/PIL',
+                    '/usr/local/lib/python3.9/site-packages/PIL',
+                    '/usr/local/lib/python3.10/site-packages/PIL',
+                    '/opt/homebrew/lib/python3.9/site-packages/PIL',
+                    '/opt/homebrew/lib/python3.10/site-packages/PIL'
+                ])
+            else:
+                # Linux
+                common_paths.extend([
+                    '/usr/lib/python3/dist-packages/PIL',
+                    '/usr/local/lib/python3.9/dist-packages/PIL',
+                    '/usr/local/lib/python3.10/dist-packages/PIL'
+                ])
+            
+            for path in common_paths:
+                if os.path.exists(path):
+                    system_pil_path = path
+                    print(f"Found PIL in common location: {system_pil_path}")
+                    break
+        
+        if not system_pil_path:
+            print("Could not find PIL in any Python installation")
+            return False
+        
+        # Create the destination directory if it doesn't exist
+        target_pil_path = os.path.join(blender_python_path, 'PIL')
+        if not os.path.exists(target_pil_path):
+            os.makedirs(target_pil_path)
+            print(f"Created directory: {target_pil_path}")
+        
+        # Copy the PIL directory
+        for item in os.listdir(system_pil_path):
+            src_item = os.path.join(system_pil_path, item)
+            dst_item = os.path.join(target_pil_path, item)
+            
+            if os.path.isfile(src_item):
+                shutil.copy2(src_item, dst_item)
+            elif os.path.isdir(src_item):
+                shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
+        
+        print(f"Copied PIL from {system_pil_path} to {target_pil_path}")
+        
+        # Verify installation
+        try:
+            # Add the site-packages to sys.path if not already there
+            if blender_python_path not in sys.path:
+                sys.path.append(blender_python_path)
+                
+            # Try to import PIL
+            from PIL import Image
+            print("PIL installation successful")
+            return True
+        except ImportError as e:
+            print(f"PIL installation failed: {str(e)}")
+            return False
+            
+    except Exception as e:
+        print(f"Error installing PIL: {str(e)}")
+        traceback.print_exc()
+        return False
 
 class BlenderMCPServer:
     def __init__(self, host='localhost', port=9876):
@@ -572,11 +711,13 @@ class BlenderMCPServer:
                 "material": material_name if 'material_name' in locals() else None
             }
     
-    def render_scene(self, width=960, height=540, format='PNG', quality=85):
+    def render_scene(self, width=960, height=540, format='PNG'):
         """Render the current scene and return as base64 encoded image"""
         print("===> DEBUG: Scene render function in addon.py activated!")
         import bpy
         import base64
+        import tempfile
+        import os
         import traceback
         import time
         
@@ -592,7 +733,7 @@ class BlenderMCPServer:
             original_res_x = bpy.context.scene.render.resolution_x
             original_res_y = bpy.context.scene.render.resolution_y
             
-            # Set temporary render settings with explicit minimum size
+            # Set temporary render settings
             actual_width = max(width, 320)  # Ensure minimum width
             actual_height = max(height, 240)  # Ensure minimum height
             
@@ -604,6 +745,16 @@ class BlenderMCPServer:
             
             print(f"===> DEBUG: Starting render with resolution {actual_width}x{actual_height}")
             
+            # Create a temporary file path
+            extension = format.lower()
+            try:
+                fd, temp_filepath = tempfile.mkstemp(suffix=f'.{extension}')
+                os.close(fd)  # Close the descriptor immediately, we just need the path
+                print(f"===> DEBUG: Created temporary file: {temp_filepath}")
+            except Exception as e:
+                print(f"===> ERROR: Failed to create temporary file: {e}")
+                return {"error": f"Failed to create temporary file: {e}"}
+
             # Render the scene
             render_start = time.time()
             bpy.ops.render.render(write_still=False)  # Only render to memory
@@ -616,176 +767,53 @@ class BlenderMCPServer:
                 return {"error": "Render completed but no result image was produced"}
             
             # Get the rendered image
-            render_result = bpy.data.images['Render Result']
-            print(f"===> DEBUG: Got render result: {render_result.size[0]}x{render_result.size[1]}")
-            result_width, result_height = render_result.size
+            img = bpy.data.images['Render Result']
+            print(f"===> DEBUG: Got render result: {img.size[0]}x{img.size[1]}")
+            result_width, result_height = img.size
             
             # Verify we have valid dimensions
             if result_width <= 0 or result_height <= 0:
                 print(f"===> ERROR: Invalid render dimensions: {result_width}x{result_height}")
-                # Create a simple fallback image (1x1 red pixel)
-                result_width = 1
-                result_height = 1
-                fallback_pixels = [1.0, 0.0, 0.0, 1.0]  # RGBA (red)
-                print("===> DEBUG: Using fallback 1x1 red pixel image")
-            else:
-                # Get the raw pixel data (RGBA float values)
-                fallback_pixels = None
-                
-            # Add extra debug to check the actual values
-            print(f"===> DEBUG: DIMENSIONS: width={result_width}, height={result_height}, type width={type(result_width)}, type height={type(result_height)}")
+                return {"error": f"Invalid render dimensions: {result_width}x{result_height}"}
             
-            # Check the pixel buffer is valid
-            if not fallback_pixels:
-                try:
-                    pixels = list(render_result.pixels)
-                    pixel_count = len(pixels)
-                    if pixel_count == 0 or pixel_count != result_width * result_height * 4:
-                        print(f"===> ERROR: Invalid pixel count: {pixel_count}, expected {result_width * result_height * 4}")
-                        fallback_pixels = [1.0, 0.0, 0.0, 1.0]  # RGBA (red)
-                        result_width = 1
-                        result_height = 1
-                except Exception as e:
-                    print(f"===> ERROR: Failed to access pixel data: {str(e)}")
-                    fallback_pixels = [1.0, 0.0, 0.0, 1.0]  # RGBA (red)
-                    result_width = 1 
-                    result_height = 1
+            # Save the render result to temporary file
+            original_format = img.file_format
+            img.file_format = format
+            img.save_render(filepath=temp_filepath)
             
-            # Use fallback or render pixels
-            if fallback_pixels:
-                pixels = fallback_pixels * (result_width * result_height)
-                
-            # Convert to 8-bit values (0-255 range)
-            byte_pixels = bytearray(len(pixels))
+            # Restore original format
+            img.file_format = original_format
             
-            # Manually convert float pixels (0.0-1.0) to bytes (0-255)
-            print("===> DEBUG: Converting raw pixels to bytes")
-            for i in range(len(pixels)):
-                byte_value = int(pixels[i] * 255)
-                if byte_value > 255:
-                    byte_value = 255
-                elif byte_value < 0:
-                    byte_value = 0
-                byte_pixels[i] = byte_value
+            print(f"===> DEBUG: Saved render to temporary file: {temp_filepath}")
             
-            # Create a simple uncompressed image format - BMP (no external libraries needed)
-            print("===> DEBUG: Creating simple BMP header and encoding image")
-            
-            # Function to create a BMP file in memory
-            def create_bmp_in_memory(width, height, pixel_data):
-                # Check dimensions again
-                if width <= 0 or height <= 0:
-                    print(f"===> ERROR: Invalid BMP dimensions: {width}x{height}")
-                    width = 1
-                    height = 1
-                    pixel_data = bytearray([255, 0, 0, 255])  # RGBA (red)
-                
-                # BMP header constants
-                HEADER_SIZE = 14
-                INFO_HEADER_SIZE = 40
-                BITS_PER_PIXEL = 32  # RGBA
-                
-                # Calculate data sizes
-                row_size = (BITS_PER_PIXEL * width + 31) // 32 * 4
-                data_size = row_size * height
-                file_size = HEADER_SIZE + INFO_HEADER_SIZE + data_size
-                
-                # Create headers
-                bmp_header = bytearray([
-                    66, 77,                          # 'BM' signature
-                    file_size & 0xff,                # File size (little endian)
-                    (file_size >> 8) & 0xff,
-                    (file_size >> 16) & 0xff,
-                    (file_size >> 24) & 0xff,
-                    0, 0, 0, 0,                      # Reserved
-                    HEADER_SIZE + INFO_HEADER_SIZE,  # Offset to pixel data
-                    0, 0, 0
-                ])
-                
-                info_header = bytearray([
-                    INFO_HEADER_SIZE, 0, 0, 0,       # Info header size
-                    width & 0xff,                    # Width (little endian)
-                    (width >> 8) & 0xff,
-                    (width >> 16) & 0xff,
-                    (width >> 24) & 0xff,
-                    height & 0xff,                   # Height (little endian)
-                    (height >> 8) & 0xff,
-                    (height >> 16) & 0xff,
-                    (height >> 24) & 0xff,
-                    1, 0,                            # Planes (1)
-                    BITS_PER_PIXEL, 0,               # Bits per pixel
-                    0, 0, 0, 0,                      # Compression (none)
-                    data_size & 0xff,                # Image size
-                    (data_size >> 8) & 0xff,
-                    (data_size >> 16) & 0xff,
-                    (data_size >> 24) & 0xff,
-                    0, 0, 0, 0,                      # X pixels per meter
-                    0, 0, 0, 0,                      # Y pixels per meter
-                    0, 0, 0, 0,                      # Colors used
-                    0, 0, 0, 0                       # Important colors
-                ])
-                
-                # Prepare pixel data (BGRA order for BMP)
-                pixel_array = bytearray(data_size)
-                
-                # Single pixel case - simple copy for fallback
-                if width == 1 and height == 1 and len(pixel_data) == 4:
-                    # RGBA to BGRA for a single pixel
-                    pixel_array[0] = pixel_data[2]  # B <- R
-                    pixel_array[1] = pixel_data[1]  # G <- G
-                    pixel_array[2] = pixel_data[0]  # R <- B
-                    pixel_array[3] = pixel_data[3]  # A <- A
-                else:
-                    # Regular image processing
-                    # We need to:
-                    # 1. Flip the image vertically (BMP is bottom-up)
-                    # 2. Convert RGBA to BGRA
-                    for y in range(height):
-                        # Flipping vertically - BMP starts from bottom
-                        y_dest = height - 1 - y
-                        
-                        for x in range(width):
-                            # Source and destination indices
-                            src_idx = (y * width + x) * 4  # RGBA
-                            dest_idx = (y_dest * width + x) * 4  # BGRA
-                            
-                            # RGBA to BGRA conversion
-                            if src_idx + 3 < len(pixel_data) and dest_idx + 3 < len(pixel_array):
-                                pixel_array[dest_idx + 0] = pixel_data[src_idx + 2]  # B <- R
-                                pixel_array[dest_idx + 1] = pixel_data[src_idx + 1]  # G <- G
-                                pixel_array[dest_idx + 2] = pixel_data[src_idx + 0]  # R <- B
-                                pixel_array[dest_idx + 3] = pixel_data[src_idx + 3]  # A <- A
-                
-                # Combine headers and pixel data
-                return bmp_header + info_header + pixel_array
-            
-            # Create BMP image in memory
-            bmp_data = create_bmp_in_memory(result_width, result_height, byte_pixels)
-            
-            # Encode to base64
-            encode_start = time.time()
-            encoded = base64.b64encode(bmp_data).decode('utf-8')
-            encode_end = time.time()
-            print(f"===> DEBUG: Encoded image to base64 in {encode_end - encode_start:.2f} seconds")
-            print(f"===> DEBUG: Encoded size: {len(encoded)} bytes")
+            # Read the file and convert to base64
+            base64_string = None
+            try:
+                with open(temp_filepath, 'rb') as image_file:
+                    image_data = image_file.read()
+                    base64_bytes = base64.b64encode(image_data)
+                    base64_string = base64_bytes.decode('utf-8')
+                    
+                print(f"===> DEBUG: Encoded image to base64: {len(base64_string)} chars")
+            except Exception as e:
+                print(f"===> ERROR: Failed to read/encode temporary file: {e}")
+                return {"error": f"Failed to read/encode temporary file: {e}"}
             
             # Calculate total processing time
             end_time = time.time()
             print(f"===> DEBUG: Total render+encode time: {end_time - start_time:.2f} seconds")
             
-            # Return the encoded image with all properties at top level
-            # IMPORTANT: width and height must be at the top level for the server to recognize them
+            # Return the encoded image with properties
             result = {
-                "image": encoded,
-                "format": "base64/bmp",
-                "width": int(result_width),    # Ensure integer type
-                "height": int(result_height),  # Ensure integer type
-                "mime_type": "image/bmp",
+                "image": base64_string,
+                "format": f"base64/{extension}",
+                "width": int(result_width),
+                "height": int(result_height),
+                "mime_type": f"image/{extension}",
                 "render_time": f"{render_end - render_start:.2f} seconds",
                 "total_time": f"{end_time - start_time:.2f} seconds"
             }
             
-            # Extra debug to see what's being returned
             print(f"===> DEBUG: RETURN OBJECT KEYS: {list(result.keys())}")
             print(f"===> DEBUG: RETURN WIDTH/HEIGHT: width={result['width']}, height={result['height']}")
             
@@ -797,11 +825,20 @@ class BlenderMCPServer:
             return {"error": f"Error rendering scene: {str(e)}"}
             
         finally:
+            # Clean up temporary file
+            if 'temp_filepath' in locals() and os.path.exists(temp_filepath):
+                try:
+                    os.remove(temp_filepath)
+                    print(f"===> DEBUG: Cleaned up temporary file: {temp_filepath}")
+                except Exception as e_clean:
+                    print(f"===> WARNING: Could not remove temporary file {temp_filepath}: {e_clean}")
+            
             # Restore original settings
-            print("===> DEBUG: Restoring original render settings")
-            bpy.context.scene.render.resolution_x = original_res_x
-            bpy.context.scene.render.resolution_y = original_res_y
-            print("===> DEBUG: Original settings restored")
+            if 'original_res_x' in locals() and 'original_res_y' in locals():
+                print("===> DEBUG: Restoring original render settings")
+                bpy.context.scene.render.resolution_x = original_res_x
+                bpy.context.scene.render.resolution_y = original_res_y
+                print("===> DEBUG: Original settings restored")
 
     def get_polyhaven_categories(self, asset_type):
         """Get categories for a specific asset type from Polyhaven"""
@@ -2009,6 +2046,11 @@ class BLENDERMCP_PT_Panel(bpy.types.Panel):
             layout.prop(scene, "blendermcp_hyper3d_api_key", text="API Key")
             layout.operator("blendermcp.set_hyper3d_free_trial_api_key", text="Set Free Trial API Key")
         
+        # Add PIL installation operator
+        layout.separator()
+        layout.label(text="Dependencies:")
+        layout.operator("blendermcp.install_pil", text="Install PIL/Pillow")
+        
         if not scene.blendermcp_server_running:
             layout.operator("blendermcp.start_server", text="Start MCP Server")
         else:
@@ -2063,8 +2105,25 @@ class BLENDERMCP_OT_StopServer(bpy.types.Operator):
         
         return {'FINISHED'}
 
+# Operator to install PIL
+class BLENDERMCP_OT_InstallPIL(bpy.types.Operator):
+    bl_idname = "blendermcp.install_pil"
+    bl_label = "Install PIL/Pillow"
+    bl_description = "Install PIL/Pillow by copying from system Python"
+    
+    def execute(self, context):
+        success = ensure_pil_installed()
+        if success:
+            self.report({'INFO'}, "PIL/Pillow installed successfully!")
+        else:
+            self.report({'ERROR'}, "Failed to install PIL/Pillow. Check console for details.")
+        return {'FINISHED'}
+
 # Registration functions
 def register():
+    # Install PIL before anything else
+    ensure_pil_installed()
+    
     bpy.types.Scene.blendermcp_port = IntProperty(
         name="Port",
         description="Port for the BlenderMCP server",
@@ -2111,6 +2170,7 @@ def register():
     bpy.utils.register_class(BLENDERMCP_OT_SetFreeTrialHyper3DAPIKey)
     bpy.utils.register_class(BLENDERMCP_OT_StartServer)
     bpy.utils.register_class(BLENDERMCP_OT_StopServer)
+    bpy.utils.register_class(BLENDERMCP_OT_InstallPIL)
     
     print("BlenderMCP addon registered")
 
@@ -2124,6 +2184,7 @@ def unregister():
     bpy.utils.unregister_class(BLENDERMCP_OT_SetFreeTrialHyper3DAPIKey)
     bpy.utils.unregister_class(BLENDERMCP_OT_StartServer)
     bpy.utils.unregister_class(BLENDERMCP_OT_StopServer)
+    bpy.utils.unregister_class(BLENDERMCP_OT_InstallPIL)
     
     del bpy.types.Scene.blendermcp_port
     del bpy.types.Scene.blendermcp_server_running

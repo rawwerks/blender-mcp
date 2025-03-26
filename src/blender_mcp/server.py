@@ -604,7 +604,7 @@ def download_polyhaven_asset(
         return f"Error downloading Polyhaven asset: {str(e)}"
 
 @mcp.tool()
-def render_scene(ctx: Context, width: int = 960, height: int = 540, format: str = 'PNG', quality: int = 85) -> str:
+def render_scene(ctx: Context, width: int = 960, height: int = 540, format: str = 'PNG') -> str:
     """
     Render the current scene in Blender and return as base64 encoded image.
     
@@ -612,7 +612,6 @@ def render_scene(ctx: Context, width: int = 960, height: int = 540, format: str 
     - width: Render width in pixels (default: 960)
     - height: Render height in pixels (default: 540)
     - format: Image format (PNG, JPEG, etc.)
-    - quality: Compression quality (0-100) for JPEG/WebP formats
     
     Using a lower resolution (like 960x540) will render much faster than full HD (1920x1080).
     """
@@ -622,8 +621,7 @@ def render_scene(ctx: Context, width: int = 960, height: int = 540, format: str 
         result = blender.send_command("render_scene", {
             "width": width,
             "height": height, 
-            "format": format,
-            "quality": quality
+            "format": format
         })
         
         if "error" in result:
@@ -652,9 +650,26 @@ def render_scene(ctx: Context, width: int = 960, height: int = 540, format: str 
                 logger.warning("Image data exists but dimensions are invalid")
                 return f"Warning: Render produced an image with invalid dimensions ({result_width}x{result_height}). The scene may be empty."
         
+        # Prepare the response with image data
+        image_data = result.get('image', '')
+        image_format = result.get('format', f'base64/{format.lower()}')
+        mime_type = result.get('mime_type', f'image/{format.lower()}')
+        
         # If we get here, dimensions are valid
         logger.info(f"Render completed successfully. Image size: {result_width}x{result_height}")
-        return f"Scene rendered successfully. Image size: {result_width}x{result_height}"
+        
+        # Create and return a formatted message with the image data
+        response = {
+            "message": f"Scene rendered successfully. Image size: {result_width}x{result_height}",
+            "image": image_data,
+            "width": result_width,
+            "height": result_height,
+            "format": image_format,
+            "mime_type": mime_type
+        }
+        
+        # Return the JSON string
+        return json.dumps(response)
     except Exception as e:
         logger.error(f"Error rendering scene: {str(e)}")
         return f"Error rendering scene: {str(e)}"
