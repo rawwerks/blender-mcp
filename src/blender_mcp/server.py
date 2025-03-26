@@ -886,26 +886,52 @@ def get_viewport_capture(
     logger.info("===> DEBUG: Viewport capture tool in server.py activated!")
     try:
         blender = get_blender_connection()
+        logger.info(f"Connection established: {blender is not None}")
+        
         params = {
             "width": width,
             "height": height,
             "format": format
         }
+        logger.info(f"Sending viewport capture command with params: {params}")
         
         result = blender.send_command("get_viewport_capture", params)
+        logger.info(f"Got result keys: {result.keys() if isinstance(result, dict) else 'not a dict'}")
         
-        if not result or "image" not in result:
-            raise ValueError("No image data returned from Blender")
+        if not result or not isinstance(result, dict):
+            logger.error(f"Invalid result type: {type(result)}")
+            raise Exception(f"Failed to capture viewport: Invalid result type {type(result)}")
             
+        if "error" in result:
+            logger.error(f"Blender reported error: {result['error']}")
+            raise Exception(f"Failed to capture viewport: {result['error']}")
+            
+        if "image" not in result:
+            logger.error(f"No image data in result. Keys: {result.keys()}")
+            raise Exception("Failed to capture viewport: No image data returned from Blender")
+            
+        # Get the image data from the result dictionary
+        image_data = result["image"]
+        logger.info(f"Image data received, length: {len(image_data) if image_data else 0}")
+        
+        if not image_data:
+            logger.error("Empty image data returned from Blender")
+            raise Exception("Empty image data returned from Blender")
+        
         # Return as an Image object
+        logger.info("Creating Image object")
         return Image(
-            data=result["image"],
+            data=image_data,
             mime_type=result.get("mime_type", f"image/{format.lower()}"),
             format="base64"
         )
+            
     except Exception as e:
         logger.error(f"Error capturing viewport: {str(e)}")
-        raise ValueError(f"Failed to capture viewport: {str(e)}")
+        # Include traceback for better debugging
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise Exception(f"Error capturing viewport: {str(e)}")
 
 @mcp.prompt()
 def asset_creation_strategy() -> str:
