@@ -629,6 +629,10 @@ def render_scene(ctx: Context, width: int = 960, height: int = 540, format: str 
         if "error" in result:
             logger.error(f"Blender reported render error: {result['error']}")
             return f"Error rendering scene: {result['error']}"
+        
+        # Debug the actual result content
+        logger.info(f"DEBUG - Render result keys: {result.keys()}")
+        logger.info(f"DEBUG - Full render result: {result}")
             
         logger.info(f"Render completed successfully. Image size: {result.get('width')}x{result.get('height')}")
         return f"Scene rendered successfully. Image size: {result.get('width', '?')}x{result.get('height', '?')}"

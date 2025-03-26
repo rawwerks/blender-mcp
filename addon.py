@@ -603,6 +603,9 @@ class BlenderMCPServer:
             print(f"===> DEBUG: Got render result: {render_result.size[0]}x{render_result.size[1]}")
             actual_width, actual_height = render_result.size
             
+            # Add extra debug to check the actual values
+            print(f"===> DEBUG: ACTUAL DIMENSIONS: width={actual_width}, height={actual_height}, type width={type(actual_width)}, type height={type(actual_height)}")
+            
             # Get the raw pixel data (RGBA float values)
             pixels = list(render_result.pixels)
             
@@ -711,16 +714,23 @@ class BlenderMCPServer:
             end_time = time.time()
             print(f"===> DEBUG: Total render+encode time: {end_time - start_time:.2f} seconds")
             
-            # Return the encoded image - always in BMP format regardless of requested format
-            return {
+            # Return the encoded image with all properties at top level
+            # IMPORTANT: width and height must be at the top level for the server to recognize them
+            result = {
                 "image": encoded,
                 "format": "base64/bmp",  # We're always returning BMP
-                "width": actual_width,
-                "height": actual_height,
+                "width": int(actual_width),   # IMPORTANT: Convert to int to ensure it's JSON serializable
+                "height": int(actual_height), # IMPORTANT: Convert to int to ensure it's JSON serializable
                 "mime_type": "image/bmp",
                 "render_time": f"{render_end - render_start:.2f} seconds",
                 "total_time": f"{end_time - start_time:.2f} seconds"
             }
+            
+            # Extra debug to see what's being returned
+            print(f"===> DEBUG: RETURN OBJECT KEYS: {list(result.keys())}")
+            print(f"===> DEBUG: RETURN WIDTH/HEIGHT: width={result['width']}, height={result['height']}")
+            
+            return result
         
         except Exception as e:
             print(f"===> ERROR: Error rendering scene: {str(e)}")
