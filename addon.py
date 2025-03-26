@@ -1310,6 +1310,7 @@ class BlenderMCPServer:
         
     def get_viewport_capture(self, width=800, height=600, format='PNG'):
         """Capture the current 3D viewport and return as base64 encoded image"""
+        print("===> DEBUG: Viewport capture function in addon.py activated!")
         import base64
         from io import BytesIO
         
