@@ -210,6 +210,7 @@ class BlenderMCPServer:
             "set_material": self.set_material,
             "get_polyhaven_status": self.get_polyhaven_status,
             "get_hyper3d_status": self.get_hyper3d_status,
+            "get_viewport_capture": self.get_viewport_capture,
         }
         
         # Add Polyhaven handlers only if enabled
@@ -1278,7 +1279,6 @@ class BlenderMCPServer:
                             3. Restart the connection to Claude"""
         }
 
-    #region Hyper3D
     def get_hyper3d_status(self):
         """Get the current status of Hyper3D Rodin integration"""
         enabled = bpy.context.scene.blendermcp_use_hyper3d
@@ -1307,6 +1307,106 @@ class BlenderMCPServer:
                             2. Check the 'Use Hyper3D Rodin 3D model generation' checkbox
                             3. Restart the connection to Claude"""
             }
+        
+    def get_viewport_capture(self, width=800, height=600, format='PNG'):
+        """Capture the current 3D viewport and return as base64 encoded image"""
+        import base64
+        from io import BytesIO
+        
+        try:
+            # Find a 3D VIEW area
+            area = None
+            for a in bpy.context.screen.areas:
+                if a.type == 'VIEW_3D':
+                    area = a
+                    break
+                    
+            if not area:
+                return {"error": "No 3D viewport found"}
+                
+            # Get the region
+            region = [r for r in area.regions if r.type == 'WINDOW'][0]
+            
+            # Get the space and view3d data
+            space = area.spaces.active
+            view3d = space
+            
+            # Set up an off-screen buffer
+            import gpu
+            from gpu.types import GPUOffScreen
+            
+            # Create offscreen buffer
+            offscreen = GPUOffScreen(width, height)
+            
+            # Store current viewport settings
+            old_shading = view3d.shading.type
+            
+            # Temporarily set solid shading for capture
+            view3d.shading.type = 'SOLID'
+            
+            # Set up the view
+            from mathutils import Matrix
+            
+            modelview_matrix = view3d.region_3d.view_matrix
+            projection_matrix = view3d.region_3d.window_matrix
+            
+            # Render offscreen
+            with offscreen.bind():
+                import bpy_extras.view3d_utils
+                from gpu_extras.presets import draw_texture_2d
+                
+                # Clear the buffer
+                gpu.state.depth_mask_set(True)
+                
+                # Set the viewport dimensions
+                gpu.state.viewport_set(0, 0, width, height)
+                
+                # Draw the 3D view
+                bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+                
+                # Get the image data
+                buffer = gpu.types.Buffer('FLOAT', width * height * 4)
+                gpu.state.depth_mask_set(True)
+                offscreen.texture_color.read_pixels(0, 0, width, height, 'RGBA', 'FLOAT', buffer)
+                
+                # Convert buffer to image 
+                import numpy as np
+                from PIL import Image
+                
+                # Reshape and convert to 8-bit values
+                pixels = np.array(buffer).reshape(height, width, 4) * 255
+                pixels = pixels.astype(np.uint8)
+                
+                # Create image from array
+                image = Image.frombuffer('RGBA', (width, height), pixels, 'raw', 'RGBA', 0, 1)
+                
+                # Flip the image vertically (Blender's viewport is inverted)
+                image = image.transpose(Image.FLIP_TOP_BOTTOM)
+                
+                # Convert to base64
+                buffered = BytesIO()
+                image.save(buffered, format=format)
+                encoded = base64.b64encode(buffered.getvalue()).decode('utf-8')
+            
+            # Restore original shading
+            view3d.shading.type = old_shading
+            
+            # Free the offscreen buffer
+            offscreen.free()
+            
+            # Return the encoded image
+            return {
+                "image": encoded,
+                "format": f"base64/{format.lower()}",
+                "width": width,
+                "height": height,
+                "mime_type": f"image/{format.lower()}"
+            }
+        
+        except Exception as e:
+            print(f"Error capturing viewport: {str(e)}")
+            traceback.print_exc()
+            return {"error": str(e)}
 
     def create_rodin_job(self, *args, **kwargs):
         match bpy.context.scene.blendermcp_hyper3d_mode:
