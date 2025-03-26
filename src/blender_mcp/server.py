@@ -876,62 +876,56 @@ def import_generated_asset(
         raise ValueError(f"Failed to import generated asset: {str(e)}")
 
 @mcp.tool()
-def get_viewport_capture(
-    ctx: Context,
-    width: int = 800,
-    height: int = 600,
-    format: str = "PNG"
-) -> Image:
-    """Capture the current Blender viewport as an image"""
-    logger.info("===> DEBUG: Viewport capture tool in server.py activated!")
+def render_scene(self, output_format='PNG'):
+    """Render the current scene and return as base64 encoded image"""
+    import bpy
+    import base64
+    from io import BytesIO
+    
+    # Store original render settings
+    original_path = bpy.context.scene.render.filepath
+    original_format = bpy.context.scene.render.image_settings.file_format
+    
     try:
-        blender = get_blender_connection()
-        logger.info(f"Connection established: {blender is not None}")
+        # Set up render to save to memory
+        bpy.context.scene.render.filepath = ""
+        bpy.context.scene.render.image_settings.file_format = output_format
         
-        params = {
+        # Render the scene
+        bpy.ops.render.render(write_still=True)
+        
+        # Get the rendered image
+        image = bpy.data.images['Render Result']
+        
+        # Convert to bytes
+        width, height = image.size
+        pixels = image.pixels[:]
+        buffer = bytearray([int(p * 255) for p in pixels])
+        
+        # Create image from buffer
+        from PIL import Image
+        img = Image.frombuffer('RGBA', (width, height), buffer, 'raw', 'RGBA', 0, 1)
+        
+        # Encode to base64
+        buffered = BytesIO()
+        img.save(buffered, format=output_format)
+        encoded = base64.b64encode(buffered.getvalue()).decode('utf-8')
+        
+        return {
+            "image": encoded,
+            "format": f"base64/{output_format.lower()}",
             "width": width,
             "height": height,
-            "format": format
+            "mime_type": f"image/{output_format.lower()}"
         }
-        logger.info(f"Sending viewport capture command with params: {params}")
-        
-        result = blender.send_command("get_viewport_capture", params)
-        logger.info(f"Got result keys: {result.keys() if isinstance(result, dict) else 'not a dict'}")
-        
-        if not result or not isinstance(result, dict):
-            logger.error(f"Invalid result type: {type(result)}")
-            raise Exception(f"Failed to capture viewport: Invalid result type {type(result)}")
-            
-        if "error" in result:
-            logger.error(f"Blender reported error: {result['error']}")
-            raise Exception(f"Failed to capture viewport: {result['error']}")
-            
-        if "image" not in result:
-            logger.error(f"No image data in result. Keys: {result.keys()}")
-            raise Exception("Failed to capture viewport: No image data returned from Blender")
-            
-        # Get the image data from the result dictionary
-        image_data = result["image"]
-        logger.info(f"Image data received, length: {len(image_data) if image_data else 0}")
-        
-        if not image_data:
-            logger.error("Empty image data returned from Blender")
-            raise Exception("Empty image data returned from Blender")
-        
-        # Return as an Image object
-        logger.info("Creating Image object")
-        return Image(
-            data=image_data,
-            mime_type=result.get("mime_type", f"image/{format.lower()}"),
-            format="base64"
-        )
-            
+    
     except Exception as e:
-        logger.error(f"Error capturing viewport: {str(e)}")
-        # Include traceback for better debugging
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        raise Exception(f"Error capturing viewport: {str(e)}")
+        return {"error": f"Error rendering scene: {str(e)}"}
+    
+    finally:
+        # Restore original settings
+        bpy.context.scene.render.filepath = original_path
+        bpy.context.scene.render.image_settings.file_format = original_format
 
 @mcp.prompt()
 def asset_creation_strategy() -> str:

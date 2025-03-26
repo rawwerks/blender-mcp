@@ -1311,8 +1311,10 @@ class BlenderMCPServer:
     def get_viewport_capture(self, width=800, height=600, format='PNG'):
         """Capture the current 3D viewport and return as base64 encoded image"""
         print("===> DEBUG: Viewport capture function in addon.py activated!")
+        print(f"===> DEBUG: Capture parameters: width={width}, height={height}, format={format}")
         import base64
         from io import BytesIO
+        import traceback
         
         try:
             # Find a 3D VIEW area
@@ -1320,82 +1322,151 @@ class BlenderMCPServer:
             for a in bpy.context.screen.areas:
                 if a.type == 'VIEW_3D':
                     area = a
+                    print(f"===> DEBUG: Found 3D viewport area: {area}")
                     break
-                    
+                else:
+                    print(f"===> DEBUG: Found non-3D area: {a.type}")
+            
             if not area:
+                print("===> ERROR: No 3D viewport found in the current context")
+                print(f"===> DEBUG: Available area types: {[a.type for a in bpy.context.screen.areas]}")
                 return {"error": "No 3D viewport found"}
                 
             # Get the region
-            region = [r for r in area.regions if r.type == 'WINDOW'][0]
+            try:
+                regions = [r for r in area.regions if r.type == 'WINDOW']
+                if not regions:
+                    print("===> ERROR: No WINDOW region found in the 3D viewport")
+                    return {"error": "No WINDOW region found in the 3D viewport"}
+                
+                region = regions[0]
+                print(f"===> DEBUG: Found 3D viewport region: {region}")
+            except Exception as e:
+                print(f"===> ERROR: Failed to get region: {str(e)}")
+                return {"error": f"Failed to get region: {str(e)}"}
             
             # Get the space and view3d data
-            space = area.spaces.active
-            view3d = space
+            try:
+                space = area.spaces.active
+                view3d = space
+                print(f"===> DEBUG: 3D view active: {space.type}")
+            except Exception as e:
+                print(f"===> ERROR: Failed to get space data: {str(e)}")
+                return {"error": f"Failed to get space data: {str(e)}"}
             
             # Set up an off-screen buffer
-            import gpu
-            from gpu.types import GPUOffScreen
-            
-            # Create offscreen buffer
-            offscreen = GPUOffScreen(width, height)
+            try:
+                import gpu
+                from gpu.types import GPUOffScreen
+                print("===> DEBUG: GPU modules imported")
+                
+                # Create offscreen buffer
+                print(f"===> DEBUG: Creating offscreen buffer with size {width}x{height}")
+                offscreen = GPUOffScreen(width, height)
+                print("===> DEBUG: Offscreen buffer created successfully")
+            except Exception as e:
+                print(f"===> ERROR: Failed to create offscreen buffer: {str(e)}")
+                return {"error": f"Failed to create offscreen buffer: {str(e)}"}
             
             # Store current viewport settings
             old_shading = view3d.shading.type
+            print(f"===> DEBUG: Current viewport shading: {old_shading}")
             
             # Temporarily set solid shading for capture
             view3d.shading.type = 'SOLID'
+            print("===> DEBUG: Set shading to SOLID")
             
             # Set up the view
-            from mathutils import Matrix
-            
-            modelview_matrix = view3d.region_3d.view_matrix
-            projection_matrix = view3d.region_3d.window_matrix
+            try:
+                from mathutils import Matrix
+                modelview_matrix = view3d.region_3d.view_matrix
+                projection_matrix = view3d.region_3d.window_matrix
+                print("===> DEBUG: View matrices retrieved")
+            except Exception as e:
+                print(f"===> ERROR: Failed to set up view matrices: {str(e)}")
+                view3d.shading.type = old_shading
+                offscreen.free()
+                return {"error": f"Failed to set up view matrices: {str(e)}"}
             
             # Render offscreen
-            with offscreen.bind():
-                import bpy_extras.view3d_utils
-                from gpu_extras.presets import draw_texture_2d
-                
-                # Clear the buffer
-                gpu.state.depth_mask_set(True)
-                
-                # Set the viewport dimensions
-                gpu.state.viewport_set(0, 0, width, height)
-                
-                # Draw the 3D view
-                bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
-                
-                # Get the image data
-                buffer = gpu.types.Buffer('FLOAT', width * height * 4)
-                gpu.state.depth_mask_set(True)
-                offscreen.texture_color.read_pixels(0, 0, width, height, 'RGBA', 'FLOAT', buffer)
-                
-                # Convert buffer to image 
-                import numpy as np
-                from PIL import Image
-                
-                # Reshape and convert to 8-bit values
-                pixels = np.array(buffer).reshape(height, width, 4) * 255
-                pixels = pixels.astype(np.uint8)
-                
-                # Create image from array
-                image = Image.frombuffer('RGBA', (width, height), pixels, 'raw', 'RGBA', 0, 1)
-                
-                # Flip the image vertically (Blender's viewport is inverted)
-                image = image.transpose(Image.FLIP_TOP_BOTTOM)
-                
-                # Convert to base64
-                buffered = BytesIO()
-                image.save(buffered, format=format)
-                encoded = base64.b64encode(buffered.getvalue()).decode('utf-8')
+            try:
+                with offscreen.bind():
+                    print("===> DEBUG: Offscreen buffer bound")
+                    import bpy_extras.view3d_utils
+                    from gpu_extras.presets import draw_texture_2d
+                    
+                    # Clear the buffer
+                    gpu.state.depth_mask_set(True)
+                    gpu.state.clear(color=(0.0, 0.0, 0.0, 0.0), depth=1.0)
+                    print("===> DEBUG: Buffer cleared")
+                    
+                    # Set the viewport dimensions
+                    gpu.state.viewport_set(0, 0, width, height)
+                    print("===> DEBUG: Viewport dimensions set")
+                    
+                    # Set matrices
+                    gpu.matrix.load_matrix(modelview_matrix)
+                    gpu.matrix.load_projection_matrix(projection_matrix)
+                    print("===> DEBUG: Matrices loaded")
+                    
+                    # Draw the 3D view
+                    print("===> DEBUG: About to redraw the viewport")
+                    bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+                    print("===> DEBUG: Viewport redraw completed")
+                    
+                    # Get the image data
+                    print("===> DEBUG: Creating pixel buffer")
+                    buffer = gpu.types.Buffer('FLOAT', width * height * 4)
+                    gpu.state.depth_mask_set(True)
+                    
+                    print("===> DEBUG: Reading pixels from texture")
+                    offscreen.texture_color.read_pixels(0, 0, width, height, 'RGBA', 'FLOAT', buffer)
+                    print("===> DEBUG: Pixels read successfully")
+                    
+                    # Convert buffer to image 
+                    import numpy as np
+                    from PIL import Image
+                    print("===> DEBUG: Image modules imported")
+                    
+                    # Reshape and convert to 8-bit values
+                    print("===> DEBUG: Converting pixel data")
+                    pixels = np.array(buffer).reshape(height, width, 4) * 255
+                    pixels = pixels.astype(np.uint8)
+                    print("===> DEBUG: Pixel conversion complete")
+                    
+                    # Create image from array
+                    print("===> DEBUG: Creating PIL Image from array")
+                    image = Image.frombuffer('RGBA', (width, height), pixels, 'raw', 'RGBA', 0, 1)
+                    print("===> DEBUG: Image created")
+                    
+                    # Flip the image vertically (Blender's viewport is inverted)
+                    print("===> DEBUG: Flipping image")
+                    image = image.transpose(Image.FLIP_TOP_BOTTOM)
+                    print("===> DEBUG: Image flipped")
+                    
+                    # Convert to base64
+                    print("===> DEBUG: Converting to base64")
+                    buffered = BytesIO()
+                    image.save(buffered, format=format)
+                    encoded = base64.b64encode(buffered.getvalue()).decode('utf-8')
+                    print(f"===> DEBUG: Base64 encoding complete, length: {len(encoded)}")
+            except Exception as e:
+                print(f"===> ERROR: Failed during offscreen rendering: {str(e)}")
+                traceback.print_exc()
+                view3d.shading.type = old_shading
+                offscreen.free()
+                return {"error": f"Failed during offscreen rendering: {str(e)}"}
             
             # Restore original shading
+            print("===> DEBUG: Restoring original shading")
             view3d.shading.type = old_shading
             
             # Free the offscreen buffer
+            print("===> DEBUG: Freeing offscreen buffer")
             offscreen.free()
             
             # Return the encoded image
+            print("===> DEBUG: Returning encoded image data")
             return {
                 "image": encoded,
                 "format": f"base64/{format.lower()}",
@@ -1405,9 +1476,9 @@ class BlenderMCPServer:
             }
         
         except Exception as e:
-            print(f"Error capturing viewport: {str(e)}")
+            print(f"===> ERROR: Error capturing viewport: {str(e)}")
             traceback.print_exc()
-            return {"error": str(e)}
+            return {"error": f"Error capturing viewport: {str(e)}"}
 
     def create_rodin_job(self, *args, **kwargs):
         match bpy.context.scene.blendermcp_hyper3d_mode:
