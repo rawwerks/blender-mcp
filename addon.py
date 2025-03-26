@@ -572,99 +572,137 @@ class BlenderMCPServer:
                 "material": material_name if 'material_name' in locals() else None
             }
     
-    def render_scene(self, width=1920, height=1080, format='PNG', quality=85):
+    def render_scene(self, width=960, height=540, format='PNG', quality=85):
         """Render the current scene and return as base64 encoded image"""
         print("===> DEBUG: Scene render function in addon.py activated!")
         import bpy
         import base64
-        from io import BytesIO
         import traceback
         import time
         
         start_time = time.time()
         try:
             # Store original render settings
-            original_path = bpy.context.scene.render.filepath
-            original_format = bpy.context.scene.render.image_settings.file_format
-            original_quality = bpy.context.scene.render.image_settings.quality
             original_res_x = bpy.context.scene.render.resolution_x
             original_res_y = bpy.context.scene.render.resolution_y
             
-            # Set temporary render settings
-            bpy.context.scene.render.filepath = ""  # Render to memory
-            bpy.context.scene.render.image_settings.file_format = format
-            bpy.context.scene.render.image_settings.quality = quality
+            # Set temporary render settings - reduced resolution for speed/compatibility
             bpy.context.scene.render.resolution_x = width
             bpy.context.scene.render.resolution_y = height
             
-            print("===> DEBUG: Starting render with settings:")
-            print(f"===> DEBUG: Resolution: {width}x{height}, Format: {format}, Quality: {quality}")
+            print(f"===> DEBUG: Starting render with resolution {width}x{height}")
             
             # Render the scene
             render_start = time.time()
-            bpy.ops.render.render(write_still=True)
+            bpy.ops.render.render(write_still=False)  # Only render to memory
             render_end = time.time()
             print(f"===> DEBUG: Render completed in {render_end - render_start:.2f} seconds")
             
             # Get the rendered image
             render_result = bpy.data.images['Render Result']
             print(f"===> DEBUG: Got render result: {render_result.size[0]}x{render_result.size[1]}")
+            actual_width, actual_height = render_result.size
             
-            # Convert to bytes directly and save to file format
-            # This is more efficient than using numpy array conversion
-            buffered = BytesIO()
+            # Get the raw pixel data (RGBA float values)
+            pixels = list(render_result.pixels)
             
-            # Different handling for different formats
-            if format.upper() in ['JPEG', 'JPG']:
-                # For JPEG, we save directly from render_result
-                render_result.save_render(buffered, scene=bpy.context.scene)
-                # Note: Blender's save_render function takes care of the format
-                print(f"===> DEBUG: Saved image as JPEG with quality {quality}")
-            elif format.upper() == 'PNG':
-                # Save via a temporary file for consistent handling
-                temp_path = original_path or "//temp_render.png"
-                bpy.context.scene.render.filepath = temp_path
-                bpy.context.scene.render.image_settings.file_format = 'PNG'
-                bpy.ops.render.render(write_still=True)
+            # Convert to 8-bit values (0-255 range)
+            pixel_count = len(pixels)
+            byte_pixels = bytearray(pixel_count)
+            
+            # Manually convert float pixels (0.0-1.0) to bytes (0-255)
+            print("===> DEBUG: Converting raw pixels to bytes")
+            for i in range(pixel_count):
+                byte_value = int(pixels[i] * 255)
+                if byte_value > 255:
+                    byte_value = 255
+                elif byte_value < 0:
+                    byte_value = 0
+                byte_pixels[i] = byte_value
+            
+            # Create a simple uncompressed image format - BMP (no external libraries needed)
+            print("===> DEBUG: Creating simple BMP header and encoding image")
+            
+            # Function to create a BMP file in memory
+            def create_bmp_in_memory(width, height, pixel_data):
+                # BMP header constants
+                HEADER_SIZE = 14
+                INFO_HEADER_SIZE = 40
+                BITS_PER_PIXEL = 32  # RGBA
                 
-                # Read the file and save to buffer
-                import os
-                real_path = bpy.path.abspath(temp_path)
-                if os.path.exists(real_path):
-                    with open(real_path, 'rb') as f:
-                        buffered.write(f.read())
-                    # Clean up temp file
-                    os.remove(real_path)
-                    print(f"===> DEBUG: Saved image as PNG via temporary file")
-                else:
-                    # Fallback to PIL if file save failed
-                    from PIL import Image
-                    import numpy as np
-                    pixels = list(render_result.pixels)
-                    width, height = render_result.size
+                # Calculate data sizes
+                row_size = (BITS_PER_PIXEL * width + 31) // 32 * 4
+                data_size = row_size * height
+                file_size = HEADER_SIZE + INFO_HEADER_SIZE + data_size
+                
+                # Create headers
+                bmp_header = bytearray([
+                    66, 77,                          # 'BM' signature
+                    file_size & 0xff,                # File size (little endian)
+                    (file_size >> 8) & 0xff,
+                    (file_size >> 16) & 0xff,
+                    (file_size >> 24) & 0xff,
+                    0, 0, 0, 0,                      # Reserved
+                    HEADER_SIZE + INFO_HEADER_SIZE,  # Offset to pixel data
+                    0, 0, 0
+                ])
+                
+                info_header = bytearray([
+                    INFO_HEADER_SIZE, 0, 0, 0,       # Info header size
+                    width & 0xff,                    # Width (little endian)
+                    (width >> 8) & 0xff,
+                    (width >> 16) & 0xff,
+                    (width >> 24) & 0xff,
+                    height & 0xff,                   # Height (little endian)
+                    (height >> 8) & 0xff,
+                    (height >> 16) & 0xff,
+                    (height >> 24) & 0xff,
+                    1, 0,                            # Planes (1)
+                    BITS_PER_PIXEL, 0,               # Bits per pixel
+                    0, 0, 0, 0,                      # Compression (none)
+                    data_size & 0xff,                # Image size
+                    (data_size >> 8) & 0xff,
+                    (data_size >> 16) & 0xff,
+                    (data_size >> 24) & 0xff,
+                    0, 0, 0, 0,                      # X pixels per meter
+                    0, 0, 0, 0,                      # Y pixels per meter
+                    0, 0, 0, 0,                      # Colors used
+                    0, 0, 0, 0                       # Important colors
+                ])
+                
+                # Prepare pixel data (BGRA order for BMP)
+                # We need to:
+                # 1. Flip the image vertically (BMP is bottom-up)
+                # 2. Convert RGBA to BGRA
+                
+                pixel_array = bytearray(data_size)
+                bytes_per_pixel = BITS_PER_PIXEL // 8
+                
+                for y in range(height):
+                    # Flipping vertically - BMP starts from bottom
+                    y_dest = height - 1 - y
                     
-                    pixels_array = np.array(pixels) * 255
-                    pixels_array = pixels_array.astype(np.uint8).reshape((height, width, 4))
-                    image = Image.fromarray(pixels_array, 'RGBA')
-                    image.save(buffered, format='PNG')
-                    print(f"===> DEBUG: Saved image as PNG via PIL fallback")
-            else:
-                # For other formats, use PIL as fallback
-                from PIL import Image
-                import numpy as np
-                pixels = list(render_result.pixels)
-                width, height = render_result.size
+                    for x in range(width):
+                        # Source and destination indices
+                        src_idx = (y * width + x) * 4  # RGBA
+                        dest_idx = (y_dest * width + x) * 4  # BGRA
+                        
+                        # RGBA to BGRA conversion
+                        if src_idx + 3 < len(pixel_data) and dest_idx + 3 < len(pixel_array):
+                            pixel_array[dest_idx + 0] = pixel_data[src_idx + 2]  # B <- R
+                            pixel_array[dest_idx + 1] = pixel_data[src_idx + 1]  # G <- G
+                            pixel_array[dest_idx + 2] = pixel_data[src_idx + 0]  # R <- B
+                            pixel_array[dest_idx + 3] = pixel_data[src_idx + 3]  # A <- A
                 
-                pixels_array = np.array(pixels) * 255
-                pixels_array = pixels_array.astype(np.uint8).reshape((height, width, 4))
-                image = Image.fromarray(pixels_array, 'RGBA')
-                image.save(buffered, format=format, quality=quality)
-                print(f"===> DEBUG: Saved image as {format} using PIL")
+                # Combine headers and pixel data
+                return bmp_header + info_header + pixel_array
+            
+            # Create BMP image in memory
+            bmp_data = create_bmp_in_memory(actual_width, actual_height, byte_pixels)
             
             # Encode to base64
             encode_start = time.time()
-            buffered.seek(0)
-            encoded = base64.b64encode(buffered.getvalue()).decode('utf-8')
+            encoded = base64.b64encode(bmp_data).decode('utf-8')
             encode_end = time.time()
             print(f"===> DEBUG: Encoded image to base64 in {encode_end - encode_start:.2f} seconds")
             print(f"===> DEBUG: Encoded size: {len(encoded)} bytes")
@@ -673,13 +711,13 @@ class BlenderMCPServer:
             end_time = time.time()
             print(f"===> DEBUG: Total render+encode time: {end_time - start_time:.2f} seconds")
             
-            # Return the encoded image
+            # Return the encoded image - always in BMP format regardless of requested format
             return {
                 "image": encoded,
-                "format": f"base64/{format.lower()}",
-                "width": width,
-                "height": height,
-                "mime_type": f"image/{format.lower()}",
+                "format": "base64/bmp",  # We're always returning BMP
+                "width": actual_width,
+                "height": actual_height,
+                "mime_type": "image/bmp",
                 "render_time": f"{render_end - render_start:.2f} seconds",
                 "total_time": f"{end_time - start_time:.2f} seconds"
             }
@@ -692,10 +730,6 @@ class BlenderMCPServer:
         finally:
             # Restore original settings
             print("===> DEBUG: Restoring original render settings")
-            bpy.context.scene.render.filepath = original_path
-            bpy.context.scene.render.image_settings.file_format = original_format
-            if hasattr(bpy.context.scene.render.image_settings, 'quality'):
-                bpy.context.scene.render.image_settings.quality = original_quality
             bpy.context.scene.render.resolution_x = original_res_x
             bpy.context.scene.render.resolution_y = original_res_y
             print("===> DEBUG: Original settings restored")
