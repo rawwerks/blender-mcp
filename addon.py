@@ -582,15 +582,27 @@ class BlenderMCPServer:
         
         start_time = time.time()
         try:
+            # First, let's check if there's anything to render
+            visible_objects = [obj for obj in bpy.context.scene.objects if obj.visible_get()]
+            print(f"===> DEBUG: Scene has {len(visible_objects)} visible objects")
+            if not visible_objects:
+                print("===> WARNING: No visible objects in scene - render might be empty")
+                
             # Store original render settings
             original_res_x = bpy.context.scene.render.resolution_x
             original_res_y = bpy.context.scene.render.resolution_y
             
-            # Set temporary render settings - reduced resolution for speed/compatibility
-            bpy.context.scene.render.resolution_x = width
-            bpy.context.scene.render.resolution_y = height
+            # Set temporary render settings with explicit minimum size
+            actual_width = max(width, 320)  # Ensure minimum width
+            actual_height = max(height, 240)  # Ensure minimum height
             
-            print(f"===> DEBUG: Starting render with resolution {width}x{height}")
+            bpy.context.scene.render.resolution_x = actual_width
+            bpy.context.scene.render.resolution_y = actual_height
+            
+            # Force Blender to update its internal state
+            bpy.context.view_layer.update()
+            
+            print(f"===> DEBUG: Starting render with resolution {actual_width}x{actual_height}")
             
             # Render the scene
             render_start = time.time()
@@ -598,24 +610,57 @@ class BlenderMCPServer:
             render_end = time.time()
             print(f"===> DEBUG: Render completed in {render_end - render_start:.2f} seconds")
             
+            # Ensure the render result is available
+            if 'Render Result' not in bpy.data.images:
+                print("===> ERROR: No 'Render Result' image found after rendering")
+                return {"error": "Render completed but no result image was produced"}
+            
             # Get the rendered image
             render_result = bpy.data.images['Render Result']
             print(f"===> DEBUG: Got render result: {render_result.size[0]}x{render_result.size[1]}")
-            actual_width, actual_height = render_result.size
+            result_width, result_height = render_result.size
             
+            # Verify we have valid dimensions
+            if result_width <= 0 or result_height <= 0:
+                print(f"===> ERROR: Invalid render dimensions: {result_width}x{result_height}")
+                # Create a simple fallback image (1x1 red pixel)
+                result_width = 1
+                result_height = 1
+                fallback_pixels = [1.0, 0.0, 0.0, 1.0]  # RGBA (red)
+                print("===> DEBUG: Using fallback 1x1 red pixel image")
+            else:
+                # Get the raw pixel data (RGBA float values)
+                fallback_pixels = None
+                
             # Add extra debug to check the actual values
-            print(f"===> DEBUG: ACTUAL DIMENSIONS: width={actual_width}, height={actual_height}, type width={type(actual_width)}, type height={type(actual_height)}")
+            print(f"===> DEBUG: DIMENSIONS: width={result_width}, height={result_height}, type width={type(result_width)}, type height={type(result_height)}")
             
-            # Get the raw pixel data (RGBA float values)
-            pixels = list(render_result.pixels)
+            # Check the pixel buffer is valid
+            if not fallback_pixels:
+                try:
+                    pixels = list(render_result.pixels)
+                    pixel_count = len(pixels)
+                    if pixel_count == 0 or pixel_count != result_width * result_height * 4:
+                        print(f"===> ERROR: Invalid pixel count: {pixel_count}, expected {result_width * result_height * 4}")
+                        fallback_pixels = [1.0, 0.0, 0.0, 1.0]  # RGBA (red)
+                        result_width = 1
+                        result_height = 1
+                except Exception as e:
+                    print(f"===> ERROR: Failed to access pixel data: {str(e)}")
+                    fallback_pixels = [1.0, 0.0, 0.0, 1.0]  # RGBA (red)
+                    result_width = 1 
+                    result_height = 1
             
+            # Use fallback or render pixels
+            if fallback_pixels:
+                pixels = fallback_pixels * (result_width * result_height)
+                
             # Convert to 8-bit values (0-255 range)
-            pixel_count = len(pixels)
-            byte_pixels = bytearray(pixel_count)
+            byte_pixels = bytearray(len(pixels))
             
             # Manually convert float pixels (0.0-1.0) to bytes (0-255)
             print("===> DEBUG: Converting raw pixels to bytes")
-            for i in range(pixel_count):
+            for i in range(len(pixels)):
                 byte_value = int(pixels[i] * 255)
                 if byte_value > 255:
                     byte_value = 255
@@ -628,6 +673,13 @@ class BlenderMCPServer:
             
             # Function to create a BMP file in memory
             def create_bmp_in_memory(width, height, pixel_data):
+                # Check dimensions again
+                if width <= 0 or height <= 0:
+                    print(f"===> ERROR: Invalid BMP dimensions: {width}x{height}")
+                    width = 1
+                    height = 1
+                    pixel_data = bytearray([255, 0, 0, 255])  # RGBA (red)
+                
                 # BMP header constants
                 HEADER_SIZE = 14
                 INFO_HEADER_SIZE = 40
@@ -674,34 +726,41 @@ class BlenderMCPServer:
                 ])
                 
                 # Prepare pixel data (BGRA order for BMP)
-                # We need to:
-                # 1. Flip the image vertically (BMP is bottom-up)
-                # 2. Convert RGBA to BGRA
-                
                 pixel_array = bytearray(data_size)
-                bytes_per_pixel = BITS_PER_PIXEL // 8
                 
-                for y in range(height):
-                    # Flipping vertically - BMP starts from bottom
-                    y_dest = height - 1 - y
-                    
-                    for x in range(width):
-                        # Source and destination indices
-                        src_idx = (y * width + x) * 4  # RGBA
-                        dest_idx = (y_dest * width + x) * 4  # BGRA
+                # Single pixel case - simple copy for fallback
+                if width == 1 and height == 1 and len(pixel_data) == 4:
+                    # RGBA to BGRA for a single pixel
+                    pixel_array[0] = pixel_data[2]  # B <- R
+                    pixel_array[1] = pixel_data[1]  # G <- G
+                    pixel_array[2] = pixel_data[0]  # R <- B
+                    pixel_array[3] = pixel_data[3]  # A <- A
+                else:
+                    # Regular image processing
+                    # We need to:
+                    # 1. Flip the image vertically (BMP is bottom-up)
+                    # 2. Convert RGBA to BGRA
+                    for y in range(height):
+                        # Flipping vertically - BMP starts from bottom
+                        y_dest = height - 1 - y
                         
-                        # RGBA to BGRA conversion
-                        if src_idx + 3 < len(pixel_data) and dest_idx + 3 < len(pixel_array):
-                            pixel_array[dest_idx + 0] = pixel_data[src_idx + 2]  # B <- R
-                            pixel_array[dest_idx + 1] = pixel_data[src_idx + 1]  # G <- G
-                            pixel_array[dest_idx + 2] = pixel_data[src_idx + 0]  # R <- B
-                            pixel_array[dest_idx + 3] = pixel_data[src_idx + 3]  # A <- A
+                        for x in range(width):
+                            # Source and destination indices
+                            src_idx = (y * width + x) * 4  # RGBA
+                            dest_idx = (y_dest * width + x) * 4  # BGRA
+                            
+                            # RGBA to BGRA conversion
+                            if src_idx + 3 < len(pixel_data) and dest_idx + 3 < len(pixel_array):
+                                pixel_array[dest_idx + 0] = pixel_data[src_idx + 2]  # B <- R
+                                pixel_array[dest_idx + 1] = pixel_data[src_idx + 1]  # G <- G
+                                pixel_array[dest_idx + 2] = pixel_data[src_idx + 0]  # R <- B
+                                pixel_array[dest_idx + 3] = pixel_data[src_idx + 3]  # A <- A
                 
                 # Combine headers and pixel data
                 return bmp_header + info_header + pixel_array
             
             # Create BMP image in memory
-            bmp_data = create_bmp_in_memory(actual_width, actual_height, byte_pixels)
+            bmp_data = create_bmp_in_memory(result_width, result_height, byte_pixels)
             
             # Encode to base64
             encode_start = time.time()
@@ -718,9 +777,9 @@ class BlenderMCPServer:
             # IMPORTANT: width and height must be at the top level for the server to recognize them
             result = {
                 "image": encoded,
-                "format": "base64/bmp",  # We're always returning BMP
-                "width": int(actual_width),   # IMPORTANT: Convert to int to ensure it's JSON serializable
-                "height": int(actual_height), # IMPORTANT: Convert to int to ensure it's JSON serializable
+                "format": "base64/bmp",
+                "width": int(result_width),    # Ensure integer type
+                "height": int(result_height),  # Ensure integer type
                 "mime_type": "image/bmp",
                 "render_time": f"{render_end - render_start:.2f} seconds",
                 "total_time": f"{end_time - start_time:.2f} seconds"

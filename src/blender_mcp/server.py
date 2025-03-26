@@ -632,10 +632,29 @@ def render_scene(ctx: Context, width: int = 960, height: int = 540, format: str 
         
         # Debug the actual result content
         logger.info(f"DEBUG - Render result keys: {result.keys()}")
-        logger.info(f"DEBUG - Full render result: {result}")
-            
-        logger.info(f"Render completed successfully. Image size: {result.get('width')}x{result.get('height')}")
-        return f"Scene rendered successfully. Image size: {result.get('width', '?')}x{result.get('height', '?')}"
+        
+        # Log the result but exclude the potentially large base64 image data
+        debug_result = result.copy()
+        if 'image' in debug_result:
+            debug_result['image'] = f"[base64 data, {len(debug_result['image'])} bytes]"
+        logger.info(f"DEBUG - Full render result (image data truncated): {debug_result}")
+        
+        # Check for valid dimensions
+        result_width = result.get('width', 0)
+        result_height = result.get('height', 0)
+        
+        if result_width <= 0 or result_height <= 0:
+            logger.warning(f"Render returned invalid dimensions: {result_width}x{result_height}")
+            if len(result.get('image', '')) < 100:
+                logger.warning(f"Image data is suspiciously small: {len(result.get('image', ''))} bytes")
+                return "Error: Render produced an empty or invalid image. Check if your scene has visible objects to render."
+            else:
+                logger.warning("Image data exists but dimensions are invalid")
+                return f"Warning: Render produced an image with invalid dimensions ({result_width}x{result_height}). The scene may be empty."
+        
+        # If we get here, dimensions are valid
+        logger.info(f"Render completed successfully. Image size: {result_width}x{result_height}")
+        return f"Scene rendered successfully. Image size: {result_width}x{result_height}"
     except Exception as e:
         logger.error(f"Error rendering scene: {str(e)}")
         return f"Error rendering scene: {str(e)}"
